@@ -527,7 +527,36 @@ function getOrderPaymentLabel(o){
   return 'غير محدد';
 }
 
-function renderOrders() {
+async function getReceiptUrl(value){
+  const raw=String(value||'').trim();
+  if(!raw) return '';
+  if(/^https?:\/\//i.test(raw)) return raw;
+  if(!token()) return '';
+  try{
+    const res=await fetch(
+      SUPABASE_URL+'/storage/v1/object/sign/payment-receipts/'+raw.split('/').map(encodeURIComponent).join('/'),
+      {
+        method:'POST',
+        headers:{
+          apikey:SUPABASE_ANON_KEY,
+          Authorization:'Bearer '+token(),
+          'Content-Type':'application/json'
+        },
+        body:JSON.stringify({expiresIn:3600})
+      }
+    );
+    const text=await res.text();
+    let data; try{data=text?JSON.parse(text):null;}catch{data=null;}
+    if(!res.ok) throw new Error(data?.message||data?.error||text||('HTTP '+res.status));
+    const signed=data?.signedURL||data?.signedUrl||'';
+    return signed ? (signed.startsWith('http')?signed:SUPABASE_URL+'/storage/v1'+signed) : '';
+  }catch(e){
+    console.warn('Receipt signed URL failed',e);
+    return '';
+  }
+}
+
+async function renderOrders() {
   const q=document.getElementById('search').value.trim().toLowerCase();
   const f=document.getElementById('filter').value;
   const list=allOrders.filter(o=>{
@@ -536,7 +565,8 @@ function renderOrders() {
   });
   const box=document.getElementById('orders');
   if (!list.length) { box.innerHTML='<div class="empty">لا توجد طلبات مطابقة</div>'; return; }
-  box.innerHTML=list.map(o=>{
+  const receiptUrls=await Promise.all(list.map(o=>getReceiptUrl(o.payment_receipt_url)));
+  box.innerHTML=list.map((o,i)=>{
     const status=o.status||'جديد';
     return `<article class="card">
       <div class="top">
@@ -559,6 +589,10 @@ function renderOrders() {
         <div class="field"><b>الدفع</b><span>${esc(getOrderPaymentLabel(o))}${String(o.payment_status||o.paymentStatus||'').includes('في انتظار المراجعة')?' — قيد المراجعة':''}</span></div>
         <div class="field wide"><b>العنوان</b><span>${esc(o.address||'—')}</span></div>
         <div class="field wide"><b>ملاحظات</b><span>${esc(o.notes||'—')}</span></div>
+      </div>
+      <div class="orderMedia" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+        ${o.product_image_url?`<div><small style="display:block;color:#888;margin-bottom:5px">صورة المنتج</small><img src="${esc(o.product_image_url)}" alt="صورة المنتج" style="width:90px;height:90px;object-fit:cover;border-radius:10px;border:1px solid #333"></div>`:''}
+        ${receiptUrls[i]?`<div><small style="display:block;color:#888;margin-bottom:5px">إيصال التحويل</small><a href="${esc(receiptUrls[i])}" target="_blank" rel="noopener"><img src="${esc(receiptUrls[i])}" alt="إيصال التحويل" style="width:90px;height:90px;object-fit:cover;border-radius:10px;border:1px solid #333;display:block"></a></div>`:(o.payment_receipt_url?`<div><small style="display:block;color:#888;margin-bottom:5px">إيصال التحويل</small><span style="color:#f0a0a0">تعذر فتح الإيصال</span></div>`:'')}
       </div>
       <div class="orderActions">
         <button type="button" class="orderInfoBtn" data-order-info="${esc(o.id)}">عرض المعلومات</button>
@@ -633,7 +667,7 @@ function playQuietAlert(){
     osc.connect(gain); gain.connect(audioCtx.destination); osc.start(now); osc.stop(now+0.33);
   }catch{}
 }
-const PUSH_VAPID_PUBLIC_KEY='BGb04FO1vqWBt3DnpKpghFD9NIPMxpKkQysjXYHr9gVyxyf2JpjoO6HbDQKqKJ4AmncCu3U3vhaf4QBO3bv504c';
+const PUSH_VAPID_PUBLIC_KEY='BDy5jCOqrxdEE26-pAa5Xd3PTMna4qLjLdX2LEacMuXHuB98QJTPbEmub6_m9egNtFsTEA4IXHkoKHcKXz_t-0A';
 function urlBase64ToUint8Array(base64String){
   const padding='='.repeat((4-base64String.length%4)%4);
   const base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/');
@@ -641,7 +675,7 @@ function urlBase64ToUint8Array(base64String){
 }
 async function registerPushServiceWorker(){
   if(!('serviceWorker' in navigator) || !('PushManager' in window)) throw new Error('المتصفح لا يدعم Push Notifications');
-  return await navigator.serviceWorker.register('./sw.js',{scope:'./'});
+  return await navigator.serviceWorker.register('/sw.js',{scope:'/'});
 }
 async function enableRealPush(){
   if(!token()) throw new Error('يجب تسجيل الدخول أولًا');
@@ -668,13 +702,19 @@ function updatePushButton(){
   const b=document.getElementById('pushBtn'); if(!b)return;
   b.textContent=(window.Notification && Notification.permission==='granted' && localStorage.getItem('pushEnabled')==='1')?'📲':'📵';
 }
-function pushNewOrder(order){
+async function pushNewOrder(order){
   try{
-    if(localStorage.getItem('pushEnabled')==='1') return;
+    if(localStorage.getItem('pushEnabled')!=='1') return;
     if(!window.Notification || Notification.permission!=='granted') return;
     const id=String(order?.id||''); if(!id)return;
-    const n=new Notification('طلب جديد #'+id,{body:'',tag:'order-'+id,renotify:true});
-    n.onclick=()=>{window.focus(); n.close();};
+    const reg=await navigator.serviceWorker.getRegistration('/');
+    if(!reg) return;
+    await reg.showNotification('طلب جديد #'+id,{
+      body:'وصل طلب جديد إلى الداشبورد',
+      tag:'order-'+id,
+      renotify:true,
+      data:{url:'/'}
+    });
   }catch(e){ console.warn('Push notification failed',e); }
 }
 function handleNewOrder(order){
@@ -722,7 +762,7 @@ function scheduleRealtimeRetry(){
 async function fallbackRefresh(){
   if(document.hidden || !token()) return;
   try{
-    const fresh=await api('/rest/v1/orders?select=id,created_at,customer_name,phone,address,product,size,color,quantity,price,status,notes&order=created_at.desc');
+    const fresh=await api('/rest/v1/orders?select=id,created_at,customer_name,phone,address,product,size,color,quantity,price,status,notes,payment_receipt_url,product_image_url&order=created_at.desc');
     const oldIds=new Set(allOrders.map(o=>String(o.id)));
     const newOrders=fresh.filter(o=>!oldIds.has(String(o.id)));
     allOrders=fresh;
@@ -736,8 +776,8 @@ function startFallbackRefresh(){
   fallbackTimer=setInterval(fallbackRefresh,15000);
 }
 document.addEventListener('click',initAudio,{once:true});
-document.getElementById('soundBtn').textContent=soundEnabled?'🔊':'🔇'; updatePushButton(); document.getElementById('pushBtn')?.addEventListener('click',requestPushPermission); navigator.serviceWorker?.register('./sw.js',{scope:'./'}).catch(()=>{});
-document.getElementById('soundBtn').addEventListener('click',()=>{soundEnabled=!soundEnabled;localStorage.setItem(SOUND_KEY,soundEnabled?'1':'0');document.getElementById('soundBtn').textContent=soundEnabled?'🔊':'🔇'; updatePushButton(); document.getElementById('pushBtn')?.addEventListener('click',requestPushPermission); navigator.serviceWorker?.register('./sw.js',{scope:'./'}).catch(()=>{});if(soundEnabled){initAudio();playQuietAlert();}});
+document.getElementById('soundBtn').textContent=soundEnabled?'🔊':'🔇'; updatePushButton(); document.getElementById('pushBtn')?.addEventListener('click',requestPushPermission); navigator.serviceWorker?.register('/sw.js',{scope:'/'}).catch(()=>{});
+document.getElementById('soundBtn').addEventListener('click',()=>{soundEnabled=!soundEnabled;localStorage.setItem(SOUND_KEY,soundEnabled?'1':'0');document.getElementById('soundBtn').textContent=soundEnabled?'🔊':'🔇'; updatePushButton(); document.getElementById('pushBtn')?.addEventListener('click',requestPushPermission); navigator.serviceWorker?.register('/sw.js',{scope:'/'}).catch(()=>{});if(soundEnabled){initAudio();playQuietAlert();}});
 document.getElementById('orderPopupClose').addEventListener('click',closePopup);
 document.getElementById('orderPopupView').addEventListener('click',()=>{if(!pendingPopupOrder)return;const o=pendingPopupOrder;markSeen(o.id);closePopup();showOrderInDetails(o);});
 document.getElementById('notifyBell').addEventListener('click',()=>document.getElementById('notifyPanel').classList.toggle('show'));
