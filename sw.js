@@ -1,9 +1,11 @@
-self.addEventListener('push', (event) => {
+self.addEventListener('push', function (event) {
   let data = {};
 
   try {
-    data = event.data ? event.data.json() : {};
-  } catch (e) {
+    if (event.data) {
+      data = event.data.json();
+    }
+  } catch (error) {
     data = {
       title: 'طلب جديد من 5DER',
       body: event.data
@@ -12,29 +14,37 @@ self.addEventListener('push', (event) => {
     };
   }
 
+  const title = data.title || 'طلب جديد من 5DER';
+
+  const options = {
+    body: data.body || 'وصل طلب جديد إلى الداشبورد',
+    icon: data.icon || '/icon-192.png',
+    badge: data.badge || '/icon-192.png',
+    tag: data.tag || '5der-order',
+    renotify: true,
+    requireInteraction: true,
+    data: {
+      url: data.url || '/'
+    }
+  };
+
   event.waitUntil(
-    self.registration.showNotification(
-      data.title || 'طلب جديد من 5DER',
-      {
-        body: data.body || 'وصل طلب جديد إلى الداشبورد',
-        tag: data.tag || '5der-order',
-        renotify: true,
-        data: {
-          url: data.url || '/'
-        }
-      }
-    )
+    self.registration.showNotification(title, options)
   );
 });
 
-self.addEventListener('notificationclick', (event) => {
+
+self.addEventListener('notificationclick', function (event) {
   event.notification.close();
+
+  const url = event.notification.data?.url || '/';
 
   event.waitUntil(
     clients.matchAll({
       type: 'window',
       includeUncontrolled: true
-    }).then((clientList) => {
+    }).then(function (clientList) {
+
       for (const client of clientList) {
         if ('focus' in client) {
           return client.focus();
@@ -42,10 +52,20 @@ self.addEventListener('notificationclick', (event) => {
       }
 
       if (clients.openWindow) {
-        return clients.openWindow(
-          event.notification.data?.url || '/'
-        );
+        return clients.openWindow(url);
       }
     })
+  );
+});
+
+
+self.addEventListener('install', function () {
+  self.skipWaiting();
+});
+
+
+self.addEventListener('activate', function (event) {
+  event.waitUntil(
+    clients.claim()
   );
 });
